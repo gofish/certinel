@@ -4,10 +4,13 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"sync"
+	"time"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/pkg/errors"
 )
+
+var WatchRetryAfter = 30 * time.Second
 
 type Sentry struct {
 	fsnotify *fsnotify.Watcher
@@ -59,8 +62,11 @@ func (w *Sentry) Watch() (certCh <-chan tls.Certificate, errCh <-chan error) {
 			defer close(w.errChan)
 			defer close(w.tlsChan)
 
+			var watchRetry <-chan time.Time
+
 			if err != nil {
 				w.errChan <- err
+				watchRetry = time.After(WatchRetryAfter)
 			}
 			w.loadCertificate()
 
@@ -72,12 +78,23 @@ func (w *Sentry) Watch() (certCh <-chan tls.Certificate, errCh <-chan error) {
 						eventsCh = nil
 					} else if event.Op&fsnotify.Write == fsnotify.Write {
 						w.loadCertificate()
+					} else if event.Op&fsnotify.Remove == fsnotify.Remove {
+						watchRetry = time.After(0)
 					}
 				case err, ok := <-errorsCh:
 					if !ok {
 						errorsCh = nil
 					} else {
 						w.errChan <- err
+					}
+				case <-watchRetry:
+					err = w.fsnotify.Add(w.certPath)
+					if err != nil {
+						w.errChan <- err
+						watchRetry = time.After(WatchRetryAfter)
+					} else {
+						watchRetry = nil
+						w.loadCertificate()
 					}
 				}
 			}

@@ -11,27 +11,34 @@ import (
 	"github.com/cloudflare/certinel/fswatcher"
 )
 
+func tempFile(t *testing.T, name string) string {
+	t.Helper()
+
+	file, err := ioutil.TempFile("", name)
+	if err != nil {
+		t.Fatal(err)
+	} else if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	return file.Name()
+}
+
 func TestClose(t *testing.T) {
 	// Prepare (empty, invalid) cert and key files to watch.
-	certFile, err := ioutil.TempFile("", "cert")
-	if err != nil {
-		t.Fatal(err)
-	}
+	cert := tempFile(t, "cert")
 
-	defer os.Remove(certFile.Name())
+	defer os.Remove(cert)
 
-	keyFile, err := ioutil.TempFile("", "key")
-	if err != nil {
-		t.Fatal(err)
-	}
+	key := tempFile(t, "key")
 
-	defer os.Remove(keyFile.Name())
+	defer os.Remove(key)
 
 	// Record the number of goroutines before starting the watch.
 	goCount := runtime.NumGoroutine()
 
 	// Start a watcher and access its notification channels.
-	watcher, err := fswatcher.New(certFile.Name(), keyFile.Name())
+	watcher, err := fswatcher.New(cert, key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +83,7 @@ func TestClose(t *testing.T) {
 	// Heavy cycling of fswatchers does not cause a race condition.
 	for i := 0; i < 10; i++ {
 		// Create a new watch.
-		w, err := fswatcher.New(certFile.Name(), keyFile.Name())
+		w, err := fswatcher.New(cert, key)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -93,5 +100,72 @@ func TestClose(t *testing.T) {
 		// Immediately close the watch, e.g. because a Dial failed.
 		w.Close()
 
+	}
+}
+
+func TestWatch(t *testing.T) {
+	// Prepare (empty, invalid) cert and key files to watch.
+	cert := tempFile(t, "cert")
+
+	defer os.Remove(cert)
+
+	key := tempFile(t, "key")
+
+	defer os.Remove(key)
+
+	// Start a watcher and access its notification channels.
+	watcher, err := fswatcher.New(cert, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, errChan := watcher.Watch()
+
+	// Ensure an error is propagated from parsing the empty cert.
+	select {
+	case <-time.After(time.Second):
+		t.Fatalf("expected a certificate error")
+	case certErr, ok := <-errChan:
+		if !ok || !strings.Contains(certErr.Error(), "failed to find any PEM data") {
+			t.Error(certErr)
+		}
+	}
+
+	// Atomically rename a new certificate file into place.
+	newCert := tempFile(t, "newCert")
+
+	defer os.Remove(newCert)
+
+	if err := os.Rename(newCert, cert); err != nil {
+		t.Fatal(err)
+	}
+
+	// Ensure an error is propagated from parsing the empty cert.
+	select {
+	case <-time.After(time.Second):
+		t.Fatalf("expected a certificate error")
+	case certErr, ok := <-errChan:
+		if !ok || !strings.Contains(certErr.Error(), "failed to find any PEM data") {
+			t.Error(certErr)
+		}
+	}
+
+	// Rename another new certificate file into place.
+	newCert = tempFile(t, "newCert")
+
+	defer os.Remove(newCert)
+
+	if err := os.Rename(newCert, cert); err != nil {
+		t.Fatal(err)
+	}
+
+	// Ensure an error is propagated from parsing the empty cert.
+	select {
+	case <-time.After(time.Second):
+		t.Fatalf("expected a certificate error")
+	case certErr, ok := <-errChan:
+		if !ok || !strings.Contains(certErr.Error(), "failed to find any PEM data") {
+			t.Error(certErr)
+		}
 	}
 }
